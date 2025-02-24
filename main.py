@@ -70,6 +70,7 @@ def delete_tweets(oauth_tokens):
     daily_deletion_limit = 17  # Free tier: 17 deletions per 24h
     deletions_today = 0
     total_deletions = 0
+    next_token = None  # For pagination
     
     while True:
         try:
@@ -82,8 +83,11 @@ def delete_tweets(oauth_tokens):
                 time.sleep(wait_time)
                 deletions_today = 0
 
-            # Get tweets (1 request per 15 minutes limit)
+            # Get tweets with pagination (1 request per 15 minutes limit)
             tweets_url = f"https://api.twitter.com/2/users/{user_id}/tweets?max_results=100"
+            if next_token:
+                tweets_url += f"&pagination_token={next_token}"
+                
             response = oauth.get(tweets_url)
             
             if response.status_code != 200:
@@ -95,9 +99,18 @@ def delete_tweets(oauth_tokens):
             
             if not tweets.get('data'):
                 logger.info(f"No more tweets found! Total deleted: {total_deletions}")
-                break
+                # Wait 24 hours and check again
+                wait_time = 24 * 60 * 60
+                next_check = datetime.now() + timedelta(seconds=wait_time)
+                logger.info(f"Will check again at {next_check.strftime('%Y-%m-%d %H:%M:%S')}")
+                time.sleep(wait_time)
+                deletions_today = 0
+                continue
 
             logger.info(f"Found {len(tweets['data'])} tweets")
+            
+            # Save pagination token for next request
+            next_token = tweets.get('meta', {}).get('next_token')
             
             # Process tweets
             for tweet in tweets['data']:
@@ -118,6 +131,10 @@ def delete_tweets(oauth_tokens):
                 total_deletions += 1
                 logger.info(f"Deleted tweet {tweet_id} ({deletions_today}/17 today, {total_deletions} total)")
 
+            # If we've hit daily limit, continue to outer loop to handle waiting
+            if deletions_today >= daily_deletion_limit:
+                continue
+
             # Wait 15 minutes before next GET request
             next_fetch = datetime.now() + timedelta(minutes=15)
             logger.info(f"Waiting until {next_fetch.strftime('%H:%M:%S')} for next batch...")
@@ -133,9 +150,10 @@ def main():
         # Get OAuth tokens
         oauth_tokens = get_oauth_session()
         
-        # Start deletion
-        logger.info("Starting tweet deletion...")
-        delete_tweets(oauth_tokens)
+        # Start deletion loop
+        logger.info("Starting continuous tweet deletion...")
+        while True:  # Outer loop for continuous operation
+            delete_tweets(oauth_tokens)
             
     except KeyboardInterrupt:
         logger.info("\nProcess interrupted by user. Exiting...")
