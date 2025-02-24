@@ -61,29 +61,48 @@ jobs:
 
     - name: Run tweet deletion script
       id: run_script
+      shell: bash
       run: |
         python main.py
-        echo "::set-output name=exit_code::$?"
+        STATUS=$?
+        echo "status=$STATUS" >> $GITHUB_OUTPUT
 
     - name: Handle script exit code
       if: always()
+      shell: bash
       run: |
-        EXIT_CODE=${{ steps.run_script.outputs.exit_code }}
-        if [ "$EXIT_CODE" = "2" ]; then
-          echo "Monthly cap reached. Scheduling next run for the start of next month."
-          gh workflow run tweet-deletion.yml --ref ${{ github.ref }} --schedule "0 0 1 * *"
-          exit 0
-        elif [ "$EXIT_CODE" = "3" ]; then
-          echo "Rate limit reached. Scheduling next run in 15 minutes."
-          gh workflow run tweet-deletion.yml --ref ${{ github.ref }} --schedule "*/15 * * * *"
-          exit 0
-        elif [ "$EXIT_CODE" = "429" ]; then
-          echo "Too Many Requests (429). Waiting for rate limit reset."
-          gh workflow run tweet-deletion.yml --ref ${{ github.ref }} --schedule "*/15 * * * *"
-          exit 0
-        else
-          echo "Unknown error occurred (Exit code: $EXIT_CODE)"
+        STATUS=${{ steps.run_script.outputs.status }}
+        echo "Script exit code: $STATUS"
+        
+        if [ -z "$STATUS" ]; then
+          echo "Error: Exit code is empty"
           exit 1
         fi
+        
+        case $STATUS in
+          0)
+            echo "Success: Script completed normally"
+            exit 0
+            ;;
+          2)
+            echo "Monthly cap reached. Scheduling next run for the start of next month."
+            gh workflow run tweet-deletion.yml --ref ${{ github.ref }} --schedule "0 0 1 * *"
+            exit 0
+            ;;
+          3)
+            echo "Rate limit reached. Scheduling next run in 15 minutes."
+            gh workflow run tweet-deletion.yml --ref ${{ github.ref }} --schedule "*/15 * * * *"
+            exit 0
+            ;;
+          429)
+            echo "Too Many Requests (429). Waiting for rate limit reset."
+            gh workflow run tweet-deletion.yml --ref ${{ github.ref }} --schedule "*/15 * * * *"
+            exit 0
+            ;;
+          *)
+            echo "Unknown error occurred (Exit code: $STATUS)"
+            exit 1
+            ;;
+        esac
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 

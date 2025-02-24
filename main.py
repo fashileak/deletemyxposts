@@ -32,10 +32,10 @@ console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
 class APIError(Exception):
-    def __init__(self, message, error_type=None, retry_after=None):
+    def __init__(self, message, error_type=None, status_code=None):
         self.message = message
         self.error_type = error_type
-        self.retry_after = retry_after
+        self.status_code = status_code
         super().__init__(self.message)
 
 class TweetDeleter:
@@ -48,9 +48,10 @@ class TweetDeleter:
         
         if not all([self.consumer_key, self.consumer_secret, 
                    self.access_token, self.access_token_secret]):
-            raise ValueError("Missing required environment variables. Check .env file.")
+            logger.error("Missing required environment variables")
+            sys.exit(1)
         
-        # Initialize OAuth session with permanent tokens
+        # Initialize OAuth session
         self.oauth = OAuth1Session(
             self.consumer_key,
             client_secret=self.consumer_secret,
@@ -95,7 +96,7 @@ class TweetDeleter:
                 raise APIError(
                     "Daily deletion limit reached",
                     error_type='daily-limit',
-                    retry_after=next_reset
+                    status_code=403
                 )
                 
         elif action_type == 'get':
@@ -109,7 +110,7 @@ class TweetDeleter:
                 raise APIError(
                     "GET request limit reached",
                     error_type='rate-limit',
-                    retry_after=next_reset
+                    status_code=429
                 )
 
     def _get_tweets(self, next_token=None):
@@ -125,70 +126,73 @@ class TweetDeleter:
         self.get_requests_15min += 1
         
         if response.status_code != 200:
-            self._handle_api_error(response.text)
+            self._handle_api_error(response)
         return response.json()
 
     def delete_tweets(self):
         """Delete tweets respecting rate limits"""
-        while True:
-            try:
-                self._check_rate_limits('delete')
-                
-                tweets = self._get_tweets()
-                if not tweets.get('data'):
-                    logger.info("No more tweets found")
-                    return
-
-                for tweet in tweets['data']:
+        try:
+            while True:
+                try:
                     self._check_rate_limits('delete')
                     
-                    if self._delete_tweet(tweet['id']):
-                        self.deletions_today += 1
-                        self.total_deletions += 1
-                        logger.info(
-                            f"Deleted tweet {tweet['id']} "
-                            f"({self.deletions_today}/{self.daily_tweet_limit} today, "
-                            f"{self.total_deletions} total)"
-                        )
-                    
-                    # Wait between deletions
-                    time.sleep(60)  # 1 minute between deletions
+                    tweets = self._get_tweets()
+                    if not tweets.get('data'):
+                        logger.info("No more tweets found")
+                        return 0
 
-            except APIError as e:
-                if e.error_type in ['rate-limit', 'daily-limit']:
-                    wait_time = (e.retry_after - datetime.now()).total_seconds()
-                    logger.info(f"Rate limit reached. Waiting until {e.retry_after}")
-                    time.sleep(max(wait_time, 60))
-                    continue
-                raise
+                    for tweet in tweets['data']:
+                        self._check_rate_limits('delete')
+                        
+                        if self._delete_tweet(tweet['id']):
+                            self.deletions_today += 1
+                            self.total_deletions += 1
+                            logger.info(
+                                f"Deleted tweet {tweet['id']} "
+                                f"({self.deletions_today}/{self.daily_tweet_limit} today, "
+                                f"{self.total_deletions} total)"
+                            )
+                        
+                        # Wait between deletions
+                        time.sleep(60)  # 1 minute between deletions
 
-    def _handle_api_error(self, error_text):
-        """Parse API error and raise appropriate exception"""
+                except APIError as e:
+                    if e.status_code == 429:
+                        logger.info(f"Rate limit exceeded. Waiting for rate limit reset.")
+                        time.sleep(900)  # Wait for 15 minutes
+                        continue
+                    elif e.error_type == 'daily-limit':
+                        logger.info(f"Daily limit reached. Next attempt scheduled for: {e.retry_after}")
+                        time.sleep((e.retry_after - datetime.now()).total_seconds())
+                        continue
+                    elif e.error_type == 'rate-limit':
+                        logger.info(f"Rate limit reached. Next attempt at: {e.retry_after}")
+                        time.sleep((e.retry_after - datetime.now()).total_seconds())
+                        continue
+                    else:
+                        raise
+
+        except Exception as e:
+            logger.error(f"Fatal error: {str(e)}")
+            return 1
+
+    def _handle_api_error(self, response):
+        """Handle API errors and raise appropriate exceptions"""
+        status_code = response.status_code
         try:
-            error_json = json.loads(error_text)
-            error_type = error_json.get('type', '').split('/')[-1]
-            
-            if error_type == 'usage-capped':
-                # Monthly cap reached
-                next_month = datetime.now().replace(day=1) + timedelta(days=32)
-                next_month = next_month.replace(day=1)
-                raise APIError(
-                    "Monthly usage cap reached",
-                    error_type='monthly-cap',
-                    retry_after=next_month
-                )
-            elif 'rate_limit' in error_type:
-                # Rate limit reached
-                retry_after = int(error_json.get('retry_after', 900))  # Default 15 minutes
-                raise APIError(
-                    "Rate limit reached",
-                    error_type='rate-limit',
-                    retry_after=datetime.now() + timedelta(seconds=retry_after)
-                )
-            else:
-                raise APIError(f"API Error: {error_text}", error_type='unknown')
+            error_data = response.json()
         except json.JSONDecodeError:
-            raise APIError(f"API Error: {error_text}", error_type='unknown')
+            error_data = {"error": response.text}
+
+        if status_code == 429:
+            logger.error(f"Rate limit exceeded: {error_data}")
+            raise APIError("Rate limit exceeded", "rate_limit", status_code)
+        elif status_code == 403 and "usage-capped" in str(error_data):
+            logger.error(f"Monthly cap reached: {error_data}")
+            raise APIError("Monthly cap reached", "monthly_cap", status_code)
+        else:
+            logger.error(f"API error: {error_data}")
+            raise APIError(f"API error: {error_data}", "unknown", status_code)
 
     def _process_tweets(self, tweets):
         """Process and delete tweets"""
@@ -213,24 +217,8 @@ def main():
     try:
         deleter = TweetDeleter()
         logger.info("Starting tweet deletion process...")
-        deleter.delete_tweets()
-        
-    except APIError as e:
-        logger.error(f"API Error: {e.message}")
-        if e.error_type == 'monthly-cap':
-            logger.info(f"Monthly cap reached. Next attempt scheduled for: {e.retry_after}")
-            # Exit with special code for monthly cap
-            sys.exit(2)
-        elif e.error_type == 'rate-limit':
-            logger.info(f"Rate limit reached. Next attempt at: {e.retry_after}")
-            # Exit with special code for rate limit
-            sys.exit(3)
-        else:
-            # Unknown error
-            sys.exit(1)
-    except KeyboardInterrupt:
-        logger.info("Process interrupted by user")
-        sys.exit(0)
+        exit_code = deleter.delete_tweets()
+        sys.exit(exit_code)
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
         sys.exit(1)
