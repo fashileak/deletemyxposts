@@ -23,20 +23,34 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: '3.x'
-
-    - name: Install build dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install build wheel setuptools
+        cache: 'pip'
 
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y python3-dev
+        sudo apt-get install -y \
+          python3-dev \
+          build-essential \
+          libffi-dev \
+          libssl-dev \
+          libjpeg-dev \
+          zlib1g-dev
 
-    - name: Install project dependencies
+    - name: Install build dependencies
       run: |
-        python -m pip install -e .
+        python -m pip install --upgrade pip
+        python -m pip install --upgrade \
+          setuptools \
+          wheel \
+          Cython
+
+    - name: Install dependencies from requirements.txt
+      run: |
+        pip install -r requirements.txt
+
+    - name: Install project in editable mode
+      run: |
+        pip install -e .
 
     - name: Run tweet deletion script
       run: python main.py 
