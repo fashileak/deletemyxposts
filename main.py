@@ -1,164 +1,174 @@
+"""
+X (Twitter) Account Cleanup Tool
+Continuously deletes tweets while respecting API rate limits.
+"""
+
 from requests_oauthlib import OAuth1Session
 import os
 import json
 import logging
 import time
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,  # Changed to INFO for cleaner output
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
+    filename='tweet_deletion.log'  # Added file logging
 )
 logger = logging.getLogger(__name__)
 
-# X API credentials
-consumer_key = "QtBcNOn6ZlZHnjonACvsu2gEH"
-consumer_secret = "w9lyTzQxP4rTFj8VnUhWRwDZmxWUjKcTtVqZrNiWvlPXOnZp3F"
+# Add console handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
-def get_oauth_session():
-    """Initialize OAuth session and get tokens"""
-    logger.info("Starting OAuth process...")
-    
-    # Get request token with PIN-based OAuth flow
-    request_token_url = "https://api.twitter.com/oauth/request_token"
-    oauth = OAuth1Session(
-        consumer_key,
-        client_secret=consumer_secret,
-        callback_uri='oob'
-    )
+class TwitterAPI:
+    def __init__(self):
+        self.consumer_key = os.getenv('CONSUMER_KEY')
+        self.consumer_secret = os.getenv('CONSUMER_SECRET')
+        self.base_url = "https://api.twitter.com"
+        
+        if not all([self.consumer_key, self.consumer_secret]):
+            raise ValueError("Missing required environment variables. Check .env file.")
 
-    fetch_response = oauth.fetch_request_token(request_token_url)
-    resource_owner_key = fetch_response.get("oauth_token")
-    resource_owner_secret = fetch_response.get("oauth_token_secret")
-
-    # Get authorization
-    base_authorization_url = "https://api.twitter.com/oauth/authorize"
-    authorization_url = oauth.authorization_url(base_authorization_url)
-    logger.info("Please go here and authorize: %s" % authorization_url)
-    logger.info("After authorizing, you'll see a PIN number. Copy it and paste it below.")
-    verifier = input("Paste the PIN here: ")
-
-    # Get the access token
-    access_token_url = "https://api.twitter.com/oauth/access_token"
-    oauth = OAuth1Session(
-        consumer_key,
-        client_secret=consumer_secret,
-        resource_owner_key=resource_owner_key,
-        resource_owner_secret=resource_owner_secret,
-        verifier=verifier,
-    )
-    oauth_tokens = oauth.fetch_access_token(access_token_url)
-
-    return oauth_tokens
-
-def delete_tweets(oauth_tokens):
-    """Delete tweets maximizing rate limits usage"""
-    access_token = oauth_tokens["oauth_token"]
-    access_token_secret = oauth_tokens["oauth_token_secret"]
-    user_id = oauth_tokens["user_id"]
-    
-    # Create OAuth session with access tokens
-    oauth = OAuth1Session(
-        consumer_key,
-        client_secret=consumer_secret,
-        resource_owner_key=access_token,
-        resource_owner_secret=access_token_secret
-    )
-
-    daily_deletion_limit = 17  # Free tier: 17 deletions per 24h
-    deletions_today = 0
-    total_deletions = 0
-    next_token = None  # For pagination
-    
-    while True:
+    def get_oauth_session(self):
+        """Initialize OAuth session and get tokens"""
         try:
-            # Check if we've hit the daily limit
-            if deletions_today >= daily_deletion_limit:
-                wait_time = 24 * 60 * 60  # 24 hours in seconds
-                next_time = datetime.now() + timedelta(seconds=wait_time)
-                logger.info(f"Daily limit reached. Total deletions: {total_deletions}")
-                logger.info(f"Waiting until {next_time.strftime('%Y-%m-%d %H:%M:%S')}...")
-                time.sleep(wait_time)
-                deletions_today = 0
+            oauth = OAuth1Session(
+                self.consumer_key,
+                client_secret=self.consumer_secret,
+                callback_uri='oob'
+            )
 
-            # Get tweets with pagination (1 request per 15 minutes limit)
-            tweets_url = f"https://api.twitter.com/2/users/{user_id}/tweets?max_results=100"
-            if next_token:
-                tweets_url += f"&pagination_token={next_token}"
-                
-            response = oauth.get(tweets_url)
+            # Get request token
+            fetch_response = oauth.fetch_request_token(f"{self.base_url}/oauth/request_token")
             
-            if response.status_code != 200:
-                raise Exception(
-                    "Request returned an error: {} {}".format(response.status_code, response.text)
-                )
+            # Get authorization
+            authorization_url = oauth.authorization_url(f"{self.base_url}/oauth/authorize")
+            logger.info("Please authorize at: %s", authorization_url)
+            verifier = input("Enter PIN: ")
 
-            tweets = response.json()
-            
-            if not tweets.get('data'):
-                logger.info(f"No more tweets found! Total deleted: {total_deletions}")
-                # Wait 24 hours and check again
-                wait_time = 24 * 60 * 60
-                next_check = datetime.now() + timedelta(seconds=wait_time)
-                logger.info(f"Will check again at {next_check.strftime('%Y-%m-%d %H:%M:%S')}")
-                time.sleep(wait_time)
-                deletions_today = 0
-                continue
-
-            logger.info(f"Found {len(tweets['data'])} tweets")
-            
-            # Save pagination token for next request
-            next_token = tweets.get('meta', {}).get('next_token')
-            
-            # Process tweets
-            for tweet in tweets['data']:
-                if deletions_today >= daily_deletion_limit:
-                    break
-                    
-                tweet_id = tweet['id']
-                
-                # Delete the tweet
-                delete_url = f"https://api.twitter.com/2/tweets/{tweet_id}"
-                response = oauth.delete(delete_url)
-                
-                if response.status_code != 200:
-                    logger.error(f"Failed to delete tweet {tweet_id}: {response.text}")
-                    continue
-                    
-                deletions_today += 1
-                total_deletions += 1
-                logger.info(f"Deleted tweet {tweet_id} ({deletions_today}/17 today, {total_deletions} total)")
-
-            # If we've hit daily limit, continue to outer loop to handle waiting
-            if deletions_today >= daily_deletion_limit:
-                continue
-
-            # Wait 15 minutes before next GET request
-            next_fetch = datetime.now() + timedelta(minutes=15)
-            logger.info(f"Waiting until {next_fetch.strftime('%H:%M:%S')} for next batch...")
-            time.sleep(15 * 60)  # 15 minutes in seconds
+            # Get access token
+            oauth = OAuth1Session(
+                self.consumer_key,
+                client_secret=self.consumer_secret,
+                resource_owner_key=fetch_response.get("oauth_token"),
+                resource_owner_secret=fetch_response.get("oauth_token_secret"),
+                verifier=verifier,
+            )
+            return oauth.fetch_access_token(f"{self.base_url}/oauth/access_token")
             
         except Exception as e:
-            logger.error(f"Error: {str(e)}")
-            logger.info("Waiting 5 minutes before retry...")
-            time.sleep(5 * 60)
+            logger.error("Authentication failed: %s", str(e))
+            raise
+
+class TweetDeleter:
+    def __init__(self, oauth_tokens):
+        self.oauth = OAuth1Session(
+            os.getenv('CONSUMER_KEY'),
+            client_secret=os.getenv('CONSUMER_SECRET'),
+            resource_owner_key=oauth_tokens["oauth_token"],
+            resource_owner_secret=oauth_tokens["oauth_token_secret"]
+        )
+        self.user_id = oauth_tokens["user_id"]
+        self.daily_limit = 17
+        self.deletions_today = 0
+        self.total_deletions = 0
+
+    def delete_tweets(self):
+        """Delete tweets respecting rate limits"""
+        next_token = None
+        
+        while True:
+            try:
+                if self.deletions_today >= self.daily_limit:
+                    self._wait_for_next_day()
+                    continue
+
+                tweets = self._get_tweets(next_token)
+                
+                if not tweets.get('data'):
+                    self._wait_for_next_day("No tweets found")
+                    continue
+
+                next_token = tweets.get('meta', {}).get('next_token')
+                self._process_tweets(tweets['data'])
+                
+                if not next_token:
+                    self._wait_for_next_day("No more pages")
+                    continue
+
+                self._wait_for_rate_limit()
+
+            except Exception as e:
+                logger.error("Error: %s", str(e))
+                time.sleep(300)  # 5 minutes
+
+    def _get_tweets(self, next_token=None):
+        """Get tweets with pagination"""
+        url = f"{self.base_url}/2/users/{self.user_id}/tweets"
+        params = {'max_results': 100}
+        if next_token:
+            params['pagination_token'] = next_token
+            
+        response = self.oauth.get(url, params=params)
+        if response.status_code != 200:
+            raise Exception(f"Failed to get tweets: {response.text}")
+        return response.json()
+
+    def _process_tweets(self, tweets):
+        """Process and delete tweets"""
+        for tweet in tweets:
+            if self.deletions_today >= self.daily_limit:
+                break
+                
+            if self._delete_tweet(tweet['id']):
+                self.deletions_today += 1
+                self.total_deletions += 1
+                logger.info(
+                    "Deleted tweet %s (%d/%d today, %d total)",
+                    tweet['id'], self.deletions_today, self.daily_limit, self.total_deletions
+                )
+
+    def _delete_tweet(self, tweet_id):
+        """Delete a single tweet"""
+        response = self.oauth.delete(f"{self.base_url}/2/tweets/{tweet_id}")
+        return response.status_code == 200
+
+    def _wait_for_rate_limit(self):
+        """Wait for rate limit reset"""
+        next_fetch = datetime.now() + timedelta(minutes=15)
+        logger.info("Next fetch at: %s", next_fetch.strftime('%H:%M:%S'))
+        time.sleep(900)  # 15 minutes
+
+    def _wait_for_next_day(self, reason="Daily limit reached"):
+        """Wait until next day"""
+        next_time = datetime.now() + timedelta(days=1)
+        logger.info("%s. Resuming at %s", reason, next_time.strftime('%Y-%m-%d %H:%M:%S'))
+        self.deletions_today = 0
+        time.sleep(86400)  # 24 hours
 
 def main():
     try:
-        # Get OAuth tokens
-        oauth_tokens = get_oauth_session()
+        api = TwitterAPI()
+        oauth_tokens = api.get_oauth_session()
+        deleter = TweetDeleter(oauth_tokens)
         
-        # Start deletion loop
-        logger.info("Starting continuous tweet deletion...")
-        while True:  # Outer loop for continuous operation
-            delete_tweets(oauth_tokens)
-            
+        logger.info("Starting tweet deletion process...")
+        deleter.delete_tweets()
+        
     except KeyboardInterrupt:
-        logger.info("\nProcess interrupted by user. Exiting...")
+        logger.info("Process interrupted by user")
     except Exception as e:
-        logger.error(f"Fatal error: {str(e)}")
+        logger.error("Fatal error: %s", str(e))
 
 if __name__ == "__main__":
     main()
