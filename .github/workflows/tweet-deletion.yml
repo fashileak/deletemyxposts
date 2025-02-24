@@ -60,4 +60,27 @@ jobs:
         pip install aiohttp --no-deps
 
     - name: Run tweet deletion script
-      run: python main.py 
+      id: run_script
+      continue-on-error: true
+      run: python main.py
+
+    - name: Schedule rerun based on error
+      if: steps.run_script.outcome == 'failure'
+      run: |
+        exit_code=$?
+        if [ $exit_code -eq 2 ]; then
+          # Monthly cap reached - Schedule for next month
+          echo "Monthly cap reached. Scheduling next run for the start of next month."
+          gh workflow run tweet-deletion.yml --ref ${{ github.ref }} \
+            --field schedule="0 0 1 * *"
+        elif [ $exit_code -eq 3 ]; then
+          # Rate limit reached - Schedule for 15 minutes later
+          echo "Rate limit reached. Scheduling next run in 15 minutes."
+          gh workflow run tweet-deletion.yml --ref ${{ github.ref }} \
+            --field schedule="*/15 * * * *"
+        else
+          echo "Unknown error occurred."
+          exit 1
+        fi
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
