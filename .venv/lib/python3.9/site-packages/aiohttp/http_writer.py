@@ -35,7 +35,6 @@ class StreamWriter(AbstractStreamWriter):
         on_headers_sent: _T_OnHeadersSent = None,
     ) -> None:
         self._protocol = protocol
-        self._transport = protocol.transport
 
         self.loop = loop
         self.length = None
@@ -44,15 +43,15 @@ class StreamWriter(AbstractStreamWriter):
         self.output_size = 0
 
         self._eof = False
-        self._compress = None  # type: Any
+        self._compress: Any = None
         self._drain_waiter = None
 
-        self._on_chunk_sent = on_chunk_sent  # type: _T_OnChunkSent
-        self._on_headers_sent = on_headers_sent  # type: _T_OnHeadersSent
+        self._on_chunk_sent: _T_OnChunkSent = on_chunk_sent
+        self._on_headers_sent: _T_OnHeadersSent = on_headers_sent
 
     @property
     def transport(self) -> Optional[asyncio.Transport]:
-        return self._transport
+        return self._protocol.transport
 
     @property
     def protocol(self) -> BaseProtocol:
@@ -71,10 +70,10 @@ class StreamWriter(AbstractStreamWriter):
         size = len(chunk)
         self.buffer_size += size
         self.output_size += size
-
-        if self._transport is None or self._transport.is_closing():
+        transport = self.transport
+        if not self._protocol.connected or transport is None or transport.is_closing():
             raise ConnectionResetError("Cannot write to closing transport")
-        self._transport.write(chunk)
+        transport.write(chunk)
 
     async def write(
         self, chunk: bytes, *, drain: bool = True, LIMIT: int = 0x10000
@@ -159,7 +158,6 @@ class StreamWriter(AbstractStreamWriter):
         await self.drain()
 
         self._eof = True
-        self._transport = None
 
     async def drain(self) -> None:
         """Flush the write buffer.
