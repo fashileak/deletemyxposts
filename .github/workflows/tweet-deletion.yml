@@ -25,39 +25,10 @@ jobs:
         python-version: '3.10'
         cache: 'pip'
 
-    - name: Install system dependencies
+    - name: Install dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          python3-dev \
-          build-essential \
-          libffi-dev \
-          libssl-dev
-
-    - name: Install build dependencies
-      run: |
-        python -m pip install --upgrade pip wheel setuptools
-
-    - name: Install core dependencies
-      run: |
-        pip install requests
-        pip install requests-oauthlib
-        pip install python-dotenv
-
-    - name: Install aiohttp dependencies
-      run: |
-        pip install \
-          multidict \
-          yarl \
-          async-timeout \
-          frozenlist \
-          aiosignal \
-          attrs \
-          charset-normalizer
-
-    - name: Install aiohttp
-      run: |
-        pip install aiohttp --no-deps
+        python -m pip install --upgrade pip
+        pip install requests requests-oauthlib python-dotenv
 
     - name: Run tweet deletion script
       id: run_script
@@ -65,7 +36,6 @@ jobs:
       run: |
         python main.py
         echo "status=$?" >> "$GITHUB_OUTPUT"
-        exit $?
 
     - name: Handle script exit code
       if: always()
@@ -84,18 +54,22 @@ jobs:
             echo "Success: Script completed normally"
             exit 0
             ;;
+          401)
+            echo "Authentication failed. Please check your API credentials."
+            exit 1
+            ;;
           429)
-            echo "Too Many Requests (429). Waiting for rate limit reset."
+            echo "Rate limit exceeded. Scheduling retry in 15 minutes."
             gh workflow run tweet-deletion.yml --ref ${{ github.ref }}
             exit 0
             ;;
           2)
-            echo "Monthly cap reached. Scheduling next run for next month."
+            echo "Monthly usage cap reached. Scheduling retry next month."
             gh workflow run tweet-deletion.yml --ref ${{ github.ref }}
             exit 0
             ;;
           3)
-            echo "Rate limit reached. Scheduling next run in 15 minutes."
+            echo "Daily deletion limit reached. Scheduling retry tomorrow."
             gh workflow run tweet-deletion.yml --ref ${{ github.ref }}
             exit 0
             ;;
