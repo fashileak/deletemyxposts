@@ -58,6 +58,12 @@ class TweetDeleter:
         # Get user ID once at initialization
         self.user_id = self._get_user_id()
 
+        # Add these debug lines
+        logger.debug(f"Consumer key length: {len(self.consumer_key)}")
+        logger.debug(f"Consumer secret length: {len(self.consumer_secret)}")
+        logger.debug(f"Access token length: {len(self.access_token)}")
+        logger.debug(f"Access token secret length: {len(self.access_token_secret)}")
+
     def _get_user_id(self):
         """Get user ID using OAuth tokens"""
         response = self.oauth.get(f"{self.base_url}/2/users/me")

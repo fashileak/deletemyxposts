@@ -12,6 +12,8 @@ jobs:
     env:
       CONSUMER_KEY: ${{ secrets.CONSUMER_KEY }}
       CONSUMER_SECRET: ${{ secrets.CONSUMER_SECRET }}
+      ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+      ACCESS_TOKEN_SECRET: ${{ secrets.ACCESS_TOKEN_SECRET }}
 
     steps:
     - name: Checkout repository
