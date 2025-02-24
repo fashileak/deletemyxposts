@@ -19,7 +19,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
-    filename='tweet_deletion.log'  # Added file logging
+    filename='tweet_deletion.log'
 )
 logger = logging.getLogger(__name__)
 
@@ -30,58 +30,40 @@ formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
-class TwitterAPI:
+class TweetDeleter:
     def __init__(self):
+        # Get credentials from environment variables
         self.consumer_key = os.getenv('CONSUMER_KEY')
         self.consumer_secret = os.getenv('CONSUMER_SECRET')
-        self.base_url = "https://api.twitter.com"
+        self.access_token = os.getenv('ACCESS_TOKEN')
+        self.access_token_secret = os.getenv('ACCESS_TOKEN_SECRET')
         
-        if not all([self.consumer_key, self.consumer_secret]):
+        if not all([self.consumer_key, self.consumer_secret, 
+                   self.access_token, self.access_token_secret]):
             raise ValueError("Missing required environment variables. Check .env file.")
-
-    def get_oauth_session(self):
-        """Initialize OAuth session and get tokens"""
-        try:
-            oauth = OAuth1Session(
-                self.consumer_key,
-                client_secret=self.consumer_secret,
-                callback_uri='oob'
-            )
-
-            # Get request token
-            fetch_response = oauth.fetch_request_token(f"{self.base_url}/oauth/request_token")
-            
-            # Get authorization
-            authorization_url = oauth.authorization_url(f"{self.base_url}/oauth/authorize")
-            logger.info("Please authorize at: %s", authorization_url)
-            verifier = input("Enter PIN: ")
-
-            # Get access token
-            oauth = OAuth1Session(
-                self.consumer_key,
-                client_secret=self.consumer_secret,
-                resource_owner_key=fetch_response.get("oauth_token"),
-                resource_owner_secret=fetch_response.get("oauth_token_secret"),
-                verifier=verifier,
-            )
-            return oauth.fetch_access_token(f"{self.base_url}/oauth/access_token")
-            
-        except Exception as e:
-            logger.error("Authentication failed: %s", str(e))
-            raise
-
-class TweetDeleter:
-    def __init__(self, oauth_tokens):
+        
+        # Initialize OAuth session with permanent tokens
         self.oauth = OAuth1Session(
-            os.getenv('CONSUMER_KEY'),
-            client_secret=os.getenv('CONSUMER_SECRET'),
-            resource_owner_key=oauth_tokens["oauth_token"],
-            resource_owner_secret=oauth_tokens["oauth_token_secret"]
+            self.consumer_key,
+            client_secret=self.consumer_secret,
+            resource_owner_key=self.access_token,
+            resource_owner_secret=self.access_token_secret
         )
-        self.user_id = oauth_tokens["user_id"]
+        
+        self.base_url = "https://api.twitter.com"
         self.daily_limit = 17
         self.deletions_today = 0
         self.total_deletions = 0
+        
+        # Get user ID once at initialization
+        self.user_id = self._get_user_id()
+
+    def _get_user_id(self):
+        """Get user ID using OAuth tokens"""
+        response = self.oauth.get(f"{self.base_url}/2/users/me")
+        if response.status_code != 200:
+            raise Exception(f"Failed to get user info: {response.text}")
+        return response.json()['data']['id']
 
     def delete_tweets(self):
         """Delete tweets respecting rate limits"""
@@ -158,10 +140,7 @@ class TweetDeleter:
 
 def main():
     try:
-        api = TwitterAPI()
-        oauth_tokens = api.get_oauth_session()
-        deleter = TweetDeleter(oauth_tokens)
-        
+        deleter = TweetDeleter()
         logger.info("Starting tweet deletion process...")
         deleter.delete_tweets()
         
