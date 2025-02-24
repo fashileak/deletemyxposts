@@ -64,14 +64,14 @@ jobs:
       shell: bash
       run: |
         python main.py
-        STATUS=$?
-        echo "status=$STATUS" >> $GITHUB_OUTPUT
+        echo "status=$?" >> "$GITHUB_OUTPUT"
+        exit $?
 
     - name: Handle script exit code
       if: always()
       shell: bash
       run: |
-        STATUS=${{ steps.run_script.outputs.status }}
+        STATUS="${{ steps.run_script.outputs.status }}"
         echo "Script exit code: $STATUS"
         
         if [ -z "$STATUS" ]; then
@@ -84,19 +84,19 @@ jobs:
             echo "Success: Script completed normally"
             exit 0
             ;;
+          429)
+            echo "Too Many Requests (429). Waiting for rate limit reset."
+            gh workflow run tweet-deletion.yml --ref ${{ github.ref }}
+            exit 0
+            ;;
           2)
-            echo "Monthly cap reached. Scheduling next run for the start of next month."
-            gh workflow run tweet-deletion.yml --ref ${{ github.ref }} --schedule "0 0 1 * *"
+            echo "Monthly cap reached. Scheduling next run for next month."
+            gh workflow run tweet-deletion.yml --ref ${{ github.ref }}
             exit 0
             ;;
           3)
             echo "Rate limit reached. Scheduling next run in 15 minutes."
-            gh workflow run tweet-deletion.yml --ref ${{ github.ref }} --schedule "*/15 * * * *"
-            exit 0
-            ;;
-          429)
-            echo "Too Many Requests (429). Waiting for rate limit reset."
-            gh workflow run tweet-deletion.yml --ref ${{ github.ref }} --schedule "*/15 * * * *"
+            gh workflow run tweet-deletion.yml --ref ${{ github.ref }}
             exit 0
             ;;
           *)

@@ -71,7 +71,15 @@ class TweetDeleter:
         self.total_deletions = 0
         
         # Get user ID once at initialization
-        self.user_id = self._get_user_id()
+        try:
+            self.user_id = self._get_user_id()
+        except APIError as e:
+            if e.status_code == 429:
+                logger.error(f"Rate limit exceeded while getting user info: {e.message}")
+                sys.exit(429)
+            else:
+                logger.error(f"Failed to get user info: {e.message}")
+                sys.exit(1)
 
         # Add these debug lines
         logger.debug(f"Consumer key length: {len(self.consumer_key)}")
@@ -80,10 +88,18 @@ class TweetDeleter:
         logger.debug(f"Access token secret length: {len(self.access_token_secret)}")
 
     def _get_user_id(self):
-        """Get user ID using OAuth tokens"""
-        response = self.oauth.get(f"{self.base_url}/2/users/me")
+        """Get user ID from the API"""
+        url = f"{self.base_url}/2/users/me"
+        response = self.oauth.get(url)
+        
         if response.status_code != 200:
-            raise Exception(f"Failed to get user info: {response.text}")
+            error_data = response.json()
+            raise APIError(
+                f"Failed to get user info: {error_data}",
+                error_type="user_info_error",
+                status_code=response.status_code
+            )
+        
         return response.json()['data']['id']
 
     def _check_rate_limits(self, action_type):
@@ -178,21 +194,37 @@ class TweetDeleter:
 
     def _handle_api_error(self, response):
         """Handle API errors and raise appropriate exceptions"""
-        status_code = response.status_code
         try:
             error_data = response.json()
+            status_code = response.status_code
+            
+            if status_code == 429:
+                logger.error(f"Rate limit exceeded: {error_data}")
+                raise APIError(
+                    str(error_data),
+                    error_type="rate_limit",
+                    status_code=429
+                )
+            elif "usage-capped" in str(error_data):
+                logger.error(f"Monthly cap reached: {error_data}")
+                raise APIError(
+                    str(error_data),
+                    error_type="monthly_cap",
+                    status_code=403
+                )
+            else:
+                logger.error(f"API error: {error_data}")
+                raise APIError(
+                    str(error_data),
+                    error_type="unknown",
+                    status_code=status_code
+                )
         except json.JSONDecodeError:
-            error_data = {"error": response.text}
-
-        if status_code == 429:
-            logger.error(f"Rate limit exceeded: {error_data}")
-            raise APIError("Rate limit exceeded", "rate_limit", status_code)
-        elif status_code == 403 and "usage-capped" in str(error_data):
-            logger.error(f"Monthly cap reached: {error_data}")
-            raise APIError("Monthly cap reached", "monthly_cap", status_code)
-        else:
-            logger.error(f"API error: {error_data}")
-            raise APIError(f"API error: {error_data}", "unknown", status_code)
+            raise APIError(
+                response.text,
+                error_type="unknown",
+                status_code=response.status_code
+            )
 
     def _process_tweets(self, tweets):
         """Process and delete tweets"""
