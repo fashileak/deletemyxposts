@@ -1,134 +1,100 @@
-"""
-X (Twitter) Account Cleanup Tool
-
-This script deletes tweets from your X account. Features:
-- Async tweet deletion for better performance
-- Dry-run mode to preview what will be deleted
-- Configurable tweet deletion limit
-- Detailed logging
-"""
-
-import tweepy
+from requests_oauthlib import OAuth1Session
+import os
+import json
 import logging
-import asyncio
-from tweepy.asynchronous import AsyncClient
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
 
-# Twitter API credentials
-# Get these from https://developer.twitter.com/
-api_key = "JqCibVB17sv2I5XXT5dufYxPw"
-api_secret = "TlOUEjbVIqBMq0I2hV1r9fVoYORg4HljACR4AXb0x8RPiXlzYk"
-access_token = "524111137-yyJOAzTfD396xQ4gXXAIuOSW1iDNkvSoQ1VxL86C"  
-access_token_secret = "5ngXsFzdmDXrMqSu2aynaXoftE7MY2dUcbF3ZJdS4cW1U"
+# X API credentials
+consumer_key = "QtBcNOn6ZlZHnjonACvsu2gEH"
+consumer_secret = "w9lyTzQxP4rTFj8VnUhWRwDZmxWUjKcTtVqZrNiWvlPXOnZp3F"
 
-# Initial auth check using legacy API
-auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_token_secret)
-api = tweepy.API(auth)
+logger.info("Starting OAuth process...")
+logger.info(f"Consumer key length: {len(consumer_key)}")
 
-# Verify connection
+# Get request token with PIN-based OAuth flow
+request_token_url = "https://api.twitter.com/oauth/request_token"
+oauth = OAuth1Session(
+    consumer_key,
+    client_secret=consumer_secret,
+    callback_uri='oob'  # This specifies PIN-based auth
+)
+
 try:
-    api.verify_credentials()
-    logger.info("Connected to your account!")
-except Exception as e:
-    logger.error("Error: %s", e)
-    exit()
+    fetch_response = oauth.fetch_request_token(request_token_url)
+    resource_owner_key = fetch_response.get("oauth_token")
+    resource_owner_secret = fetch_response.get("oauth_token_secret")
+    logger.info("Got OAuth token: %s" % resource_owner_key)
 
-async def delete_tweets(limit=None, dry_run=False):
-    """
-    Asynchronously delete tweets from the authenticated user's timeline.
+    # Get authorization
+    base_authorization_url = "https://api.twitter.com/oauth/authorize"
+    authorization_url = oauth.authorization_url(base_authorization_url)
+    logger.info("Please go here and authorize: %s" % authorization_url)
+    logger.info("After authorizing, you'll see a PIN number. Copy it and paste it below.")
+    verifier = input("Paste the PIN here: ")
 
-    Args:
-        limit (int, optional): Maximum number of tweets to delete. 
-            If None, will attempt to delete all available tweets.
-        dry_run (bool, optional): If True, simulates deletion without actually
-            deleting tweets. Defaults to False.
-
-    Returns:
-        int: Number of tweets processed (deleted in live mode, or would be deleted in dry-run mode)
-
-    Note:
-        The Twitter API limits the number of tweets that can be fetched to the
-        most recent 3200 tweets. To delete older tweets, the script needs to
-        be run multiple times as newer tweets are deleted.
-    """
-    deleted_count = 0
-    client = AsyncClient(
-        bearer_token=None,  # We're using OAuth 1.0a
-        consumer_key=api_key,
-        consumer_secret=api_secret,
-        access_token=access_token,
-        access_token_secret=access_token_secret
+    # Get the access token
+    access_token_url = "https://api.twitter.com/oauth/access_token"
+    oauth = OAuth1Session(
+        consumer_key,
+        client_secret=consumer_secret,
+        resource_owner_key=resource_owner_key,
+        resource_owner_secret=resource_owner_secret,
+        verifier=verifier,
     )
+    oauth_tokens = oauth.fetch_access_token(access_token_url)
+
+    access_token = oauth_tokens["oauth_token"]
+    access_token_secret = oauth_tokens["oauth_token_secret"]
+    user_id = oauth_tokens["user_id"]
     
-    action = "Would delete" if dry_run else "Deleting"
-    logger.info("Starting tweet deletion in %s mode", "dry-run" if dry_run else "live")
+    logger.info("Successfully obtained access tokens!")
+
+    # Create new OAuth session with the access tokens
+    oauth = OAuth1Session(
+        consumer_key,
+        client_secret=consumer_secret,
+        resource_owner_key=access_token,
+        resource_owner_secret=access_token_secret
+    )
+
+    # First, get user's tweets
+    tweets_url = f"https://api.twitter.com/2/users/{user_id}/tweets"
+    response = oauth.get(tweets_url)
     
-    try:
-        # Get user ID - updated to handle v2 response correctly
-        user = await client.get_me()
-        if not user.data:
-            logger.error("Failed to get user information")
-            return 0
-            
-        logger.info("Connected as user: %s", user.data.username)  # Changed from user.username to user.data.username
-        
-        # Fetch tweets using Twitter API v2
-        response = await client.get_users_tweets(
-            user.data.id,  # Changed from user.id to user.data.id
-            max_results=100,
-            tweet_fields=['text']
+    if response.status_code != 200:
+        raise Exception(
+            "Request returned an error: {} {}".format(response.status_code, response.text)
         )
+
+    tweets = response.json()
+    logger.info("Found tweets: %s" % json.dumps(tweets, indent=4))
+
+    # Now we can delete a specific tweet
+    if tweets.get('data'):
+        tweet_id = tweets['data'][0]['id']  # Get the first tweet's ID
+        logger.info(f"Attempting to delete tweet ID: {tweet_id}")
         
-        if not response or not response.data:
-            logger.info("No tweets found to delete")
-            return 0
+        # Delete the tweet
+        delete_url = f"https://api.twitter.com/2/tweets/{tweet_id}"
+        response = oauth.delete(delete_url)
+        
+        if response.status_code != 200:
+            raise Exception(
+                "Request returned an error: {} {}".format(response.status_code, response.text)
+            )
             
-        # Process tweets in parallel
-        delete_tasks = []
-        for tweet in response.data:
-            if limit and deleted_count >= limit:
-                logger.info("Reached deletion limit of %d tweets", limit)
-                break
-                
-            deleted_count += 1
-            logger.info("%s tweet (%d/%s): %s", 
-                       action,
-                       deleted_count, 
-                       str(limit) if limit else "all", 
-                       tweet.text)
-                
-            if not dry_run:
-                delete_tasks.append(client.delete_tweet(tweet.id))
-        
-        if delete_tasks:
-            # Execute all deletion tasks concurrently
-            await asyncio.gather(*delete_tasks, return_exceptions=True)
-        
-        status = "Would have deleted" if dry_run else "Deleted"
-        logger.info("Process complete. %s %d tweets.", status, deleted_count)
-        return deleted_count
-        
-    except Exception as e:
-        logger.error("Error during tweet deletion: %s", e)
-        return deleted_count
+        logger.info("Successfully deleted tweet!")
+        logger.info(response.json())
 
-async def main():
-    """
-    Main entry point for the script.
-    Configure the limit and dry_run parameters here before running.
-    """
-    # Configuration
-    limit = None  # Set to None to delete all available tweets
-    dry_run = True  # Set to False to actually delete tweets
-    
-    await delete_tweets(limit, dry_run)
-
-if __name__ == "__main__":
-    asyncio.run(main()) 
+except ValueError as e:
+    logger.error("Error with credentials: %s" % str(e))
+    logger.error("Please verify your API Key and Secret are correct.")
+except Exception as e:
+    logger.error("Unexpected error: %s" % str(e))
