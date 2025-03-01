@@ -1,13 +1,13 @@
-name: Tweet Deletion
+name: Monthly Tweet Retrieval
 
 on:
   schedule:
-    # Run daily at 3:00 UTC to delete tweets (using stored IDs)
-    - cron: '0 3 * * *'  # At 3:00 UTC every day
+    # Run at 2:00 UTC on the 1st of each month
+    - cron: '0 2 1 * *'
   workflow_dispatch:      # Allows manual trigger
 
 jobs:
-  delete-tweets:
+  retrieve-tweets:
     runs-on: ubuntu-latest
     
     env:
@@ -16,8 +16,8 @@ jobs:
       ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
       ACCESS_TOKEN_SECRET: ${{ secrets.ACCESS_TOKEN_SECRET }}
       TWITTER_USER_ID: ${{ secrets.TWITTER_USER_ID }}
-      # Flag to indicate this is a deletion-only run
-      OPERATION_MODE: 'delete'
+      # Flag to indicate this is a retrieval-only run
+      OPERATION_MODE: 'retrieve'
 
     steps:
     - name: Checkout repository
@@ -34,7 +34,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install requests requests-oauthlib python-dotenv
 
-    - name: Run tweet deletion script
+    - name: Run tweet retrieval script
       id: run_script
       shell: bash
       run: |
@@ -42,29 +42,37 @@ jobs:
         export PYTHONUNBUFFERED=1
         
         # Run the script and capture output
-        python main.py 2>&1 | tee deletion_output.log
+        python main.py 2>&1 | tee retrieval_output.log
         exit_code=${PIPESTATUS[0]}
         
         echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
         
         # Display API responses in GitHub summary
         echo "## X API Response Summary" >> $GITHUB_STEP_SUMMARY
-        grep "API call" deletion_output.log >> $GITHUB_STEP_SUMMARY || echo "No API calls made" >> $GITHUB_STEP_SUMMARY
+        grep "API call" retrieval_output.log >> $GITHUB_STEP_SUMMARY || echo "No API calls made" >> $GITHUB_STEP_SUMMARY
         
         # Display rate limit info
         echo "## Rate Limit Information" >> $GITHUB_STEP_SUMMARY
-        grep "rate limit" deletion_output.log >> $GITHUB_STEP_SUMMARY || echo "No rate limit information" >> $GITHUB_STEP_SUMMARY
+        grep "rate limit" retrieval_output.log >> $GITHUB_STEP_SUMMARY || echo "No rate limit information" >> $GITHUB_STEP_SUMMARY
         
-        # Display tweet deletion summary
-        echo "## Tweet Deletion Summary" >> $GITHUB_STEP_SUMMARY
-        grep "Deleted tweet" deletion_output.log >> $GITHUB_STEP_SUMMARY || echo "No tweets deleted" >> $GITHUB_STEP_SUMMARY
+        # Display tweet retrieval summary
+        echo "## Tweet Retrieval Summary" >> $GITHUB_STEP_SUMMARY
+        grep "Saved" retrieval_output.log >> $GITHUB_STEP_SUMMARY || echo "No tweets retrieved" >> $GITHUB_STEP_SUMMARY
         
         exit $exit_code
 
     - name: Upload logs as artifact
       uses: actions/upload-artifact@v3
       with:
-        name: deletion-logs
+        name: retrieval-logs
         path: |
-          deletion_output.log
+          retrieval_output.log
           api_calls.log
+        
+    - name: Commit and push if tweet IDs have changed
+      run: |
+        git config --global user.name 'GitHub Actions Bot'
+        git config --global user.email 'actions@github.com'
+        git add tweet_ids.json last_pull.txt || true
+        git commit -m "Update tweet IDs list from monthly retrieval" || true
+        git push || true 
